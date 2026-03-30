@@ -1,3 +1,4 @@
 ## FrostyOs
 
-### This is not a Linux-based OS
+> [!NOTE]  
+> This is not a Linux-based distro.
