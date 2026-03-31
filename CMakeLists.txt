@@ -7,7 +7,7 @@ project(FrostyOS
 
 add_library(kernel_bare_metal INTERFACE)
 
-target_compile_features(kernel_bare_metal INTERFACE cxx_std_23)
+target_compile_features(kernel_bare_metal INTERFACE cxx_std_26)
 
 target_compile_options(kernel_bare_metal INTERFACE
     $<$<COMPILE_LANGUAGE:CXX>:
