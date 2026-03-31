@@ -89,6 +89,8 @@ add_custom_target(run
         -m 512M
         -serial stdio
         -boot d
+        -machine pcspk-audiodev=audio0
+        -audiodev pa,id=audio0 
     DEPENDS ${ISO_NAME}
-    USES_TERMINAL 
+    USES_TERMINAL
 )
