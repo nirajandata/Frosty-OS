@@ -33,14 +33,16 @@ public:
         put_pixel(j, i, c);
   }
 
-  void draw_text(int x, int y, const char *str, color c) {
+  void draw_text(int x, int y, const char *str, color c) noexcept {
     while (*str) {
-      if (*str >= 32 && *str <= 126) {
-        const uint8_t *glyph = font8x8[(uint8_t)*str];
+      uint8_t index = static_cast<uint8_t>(*str);
+      if (index < 128) {
+        const uint8_t *glyph = font8x8[index];
         for (int i = 0; i < 8; i++) {
           for (int j = 0; j < 8; j++) {
-            if (glyph[i] & (1 << (7 - j)))
+            if (glyph[i] & (1 << (7 - j))) {
               put_pixel(x + j, y + i, c);
+            }
           }
         }
       }
