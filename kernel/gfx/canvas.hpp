@@ -1,6 +1,7 @@
 #pragma once
 #include "../limine.h"
 #include "../math/math.hpp"
+#include "font.hpp"
 #include "types.hpp"
 #include <cstddef>
 
@@ -26,14 +27,38 @@ public:
     back_buffer[y * fb->width + x] = static_cast<uint32_t>(c);
   }
 
-  void draw_line(int x0, int y0, int x1, int y1, color c) noexcept {
+  void draw_rect(int x, int y, int w, int h, color c) noexcept {
+    for (int i = y; i < y + h; ++i)
+      for (int j = x; j < x + w; ++j)
+        put_pixel(j, i, c);
+  }
+
+  void draw_text(int x, int y, const char *str, color c) {
+    while (*str) {
+      if (*str >= 32 && *str <= 126) {
+        const uint8_t *glyph = font8x8[(uint8_t)*str];
+        for (int i = 0; i < 8; i++) {
+          for (int j = 0; j < 8; j++) {
+            if (glyph[i] & (1 << (7 - j)))
+              put_pixel(x + j, y + i, c);
+          }
+        }
+      }
+      x += 9;
+      str++;
+    }
+  }
+
+  void draw_line(int x0, int y0, int x1, int y1, int size, color c) noexcept {
     int dx = math::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -math::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
     while (true) {
-      for (int i = -1; i <= 1; ++i)
-        for (int j = -1; j <= 1; ++j)
-          put_pixel(x0 + i, y0 + j, c);
+      int half = size / 2;
+      for (int i = -half; i <= half; ++i)
+        for (int j = -half; j <= half; ++j)
+          put_pixel(x0 + j, y0 + i, c);
+
       if (x0 == x1 && y0 == y1)
         break;
       int e2 = 2 * err;
@@ -48,28 +73,15 @@ public:
     }
   }
 
-  void draw_rect(int x, int y, int w, int h, color c) noexcept {
-    for (int i = y; i < y + h; ++i)
-      for (int j = x; j < x + w; ++j)
-        put_pixel(j, i, c);
-  }
-
   void swap() noexcept {
     auto *const front = static_cast<uint32_t *>(fb->address);
     const uint32_t stride = fb->pitch / 4;
-    for (uint32_t y = 0; y < fb->height; ++y) {
-      for (uint32_t x = 0; x < fb->width; ++x) {
+    for (uint32_t y = 0; y < fb->height; ++y)
+      for (uint32_t x = 0; x < fb->width; ++x)
         front[y * stride + x] = back_buffer[y * fb->width + x];
-      }
-    }
   }
 
-  [[nodiscard]] constexpr auto width() const noexcept -> int {
-    return (int)fb->width;
-  }
-  [[nodiscard]] constexpr auto height() const noexcept -> int {
-    return (int)fb->height;
-  }
+  int width() const { return (int)fb->width; }
+  int height() const { return (int)fb->height; }
 };
-
 } // namespace frosty::gfx
