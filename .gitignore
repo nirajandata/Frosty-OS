@@ -6,7 +6,7 @@ test.*
 isodir
 build/
 limine/
-kerne/limine.h
+kernel/limine.h
 
 *.out
 *.iso
