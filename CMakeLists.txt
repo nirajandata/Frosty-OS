@@ -16,7 +16,8 @@ target_compile_options(kernel_bare_metal INTERFACE
         -fno-pie -fno-pic
         -fno-rtti -fno-exceptions
         -mno-80387 -mno-mmx 
-         -mno-sse -mno-sse2
+        # -mno-sse -mno-sse2
+        -msse -msse2
         -mno-red-zone
         -mcmodel=kernel
         -Wall -Wextra -O2
@@ -90,6 +91,7 @@ add_custom_target(run
         -m 512M
         -serial stdio
         -boot d
+        -enable-kvm
         -device usb-ehci,id=usb 
         -device usb-tablet     
         -machine pcspk-audiodev=audio0
