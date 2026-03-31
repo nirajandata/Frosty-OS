@@ -1,267 +1,308 @@
 #include "limine.h"
-#include <array>
-#include <cstddef>
-#include <cstdint>
-#include <utility>
+#include <stddef.h>
+#include <stdint.h>
 
 namespace frosty {
 
-enum class color : std::uint32_t {
+enum class color : uint32_t {
   pink = 0xFFB2D1,
   white = 0xFFFFFF,
   black = 0x000000,
   hot_pink = 0xFF69B4,
-  nose = 0xFF7777
+  nose = 0xFF7777,
+  ink = 0x4B0082
 };
 
 namespace math {
-[[nodiscard]] consteval auto get_sin_lut() -> std::array<std::int32_t, 36> {
-  return {0,   17,  34,  50,   64,  76,  86,  93,  98,  100, 98,  93,
-          86,  76,  64,  50,   34,  17,  0,   -17, -34, -50, -64, -76,
-          -86, -93, -98, -100, -98, -93, -86, -76, -64, -50, -34, -17};
+template <typename T> [[nodiscard]] constexpr auto abs(T v) noexcept -> T {
+  return v < 0 ? -v : v;
 }
 
-[[nodiscard]] constexpr std::int32_t sin(std::int32_t angle) noexcept {
-  constexpr auto lut = get_sin_lut();
-  const auto safe_angle = ((angle % 360) + 360) % 360;
-  return lut[static_cast<std::size_t>(safe_angle / 10)];
-}
-
-class random {
-  std::uint64_t state;
-
-public:
-  constexpr explicit random(std::uint64_t seed = 0) noexcept {
-    if !consteval {
-      if (seed == 0) {
-        std::uint32_t low, high;
-        asm volatile("rdtsc" : "=a"(low), "=d"(high));
-        state = (static_cast<std::uint64_t>(high) << 32) | low;
-      } else {
-        state = seed;
-      }
-    } else {
-      state = seed != 0 ? seed : 0xDEADBEEF;
-    }
-  }
-
-  [[nodiscard]] constexpr std::uint64_t next(this random &self) noexcept {
-    self.state ^= self.state << 13;
-    self.state ^= self.state >> 7;
-    self.state ^= self.state << 17;
-    return self.state;
-  }
-
-  [[nodiscard]] constexpr std::uint64_t
-  range(this random &self, std::uint64_t min, std::uint64_t max) noexcept {
-    return min + (self.next() % (max - min + 1));
+struct sin_table {
+  int32_t values[36];
+  consteval sin_table() : values{} {
+    int32_t raw[] = {0,    17,  34,  50,  64,  76,  86,  93,  98,
+                     100,  98,  93,  86,  76,  64,  50,  34,  17,
+                     0,    -17, -34, -50, -64, -76, -86, -93, -98,
+                     -100, -98, -93, -86, -76, -64, -50, -34, -17};
+    for (auto i = 0; i < 36; ++i)
+      values[i] = raw[i];
   }
 };
+
+static constexpr auto lut = sin_table();
+[[nodiscard]] constexpr auto sin(int32_t angle) noexcept -> int32_t {
+  return lut.values[(angle % 360) / 10];
+}
 } // namespace math
 
 namespace hw {
 struct port {
-  static inline void outb(std::uint16_t p, std::uint8_t v) noexcept {
-    if !consteval {
-      asm volatile("outb %0, %1" : : "a"(v), "Nd"(p));
-    }
+  static inline void outb(uint16_t p, uint8_t v) noexcept {
+    asm volatile("outb %0, %1" : : "a"(v), "Nd"(p) : "memory");
   }
-  [[nodiscard]] static inline std::uint8_t inb(std::uint16_t p) noexcept {
-    if consteval {
-      return 0;
-    }
-    std::uint8_t r;
-    asm volatile("inb %1, %0" : "=a"(r) : "Nd"(p));
+  [[nodiscard]] static inline auto inb(uint16_t p) noexcept -> uint8_t {
+    uint8_t r;
+    asm volatile("inb %1, %0" : "=a"(r) : "Nd"(p) : "memory");
     return r;
-  }
-  static void io_wait() noexcept { outb(0x80, 0); }
-};
-
-struct timer {
-  static void sleep(uint64_t iterations) {
-    for (volatile uint64_t i = 0; i < iterations; i = i + 1) {
-      asm volatile("pause");
-    }
-  }
-};
-
-struct mouse {
-  int x, y;
-  uint8_t cycle = 0;
-  uint8_t packet[3];
-
-  void wait(uint8_t type) {
-    uint32_t timeout = 100000;
-    if (type == 0) {
-      while (timeout--)
-        if ((port::inb(0x64) & 1) == 1)
-          return;
-    } else {
-      while (timeout--)
-        if ((port::inb(0x64) & 2) == 0)
-          return;
-    }
-  }
-
-  void write(uint8_t data) {
-    wait(1);
-    port::outb(0x64, 0xD4);
-    wait(1);
-    port::outb(0x60, data);
-  }
-
-  uint8_t read() {
-    wait(0);
-    return port::inb(0x60);
-  }
-
-  void init(int start_x, int start_y) {
-    x = start_x;
-    y = start_y;
-
-    wait(1);
-    port::outb(0x64, 0xA8);
-    wait(1);
-    port::outb(0x64, 0x20);
-    wait(0);
-    uint8_t status = (port::inb(0x60) | 2);
-    wait(1);
-    port::outb(0x64, 0x60);
-    wait(1);
-    port::outb(0x60, status);
-
-    write(0xF6);
-    read();
-    write(0xF4);
-    read();
-  }
-
-  void poll() {
-    if ((port::inb(0x64) & 1) == 0)
-      return;
-
-    uint8_t data = port::inb(0x60);
-    packet[cycle] = data;
-    cycle = (cycle + 1) % 3;
-
-    if (cycle == 0) {
-      int dx = (int8_t)packet[1];
-      int dy = (int8_t)packet[2];
-      x += dx;
-      y -= dy;
-    }
   }
 };
 
 struct speaker {
-  static void play(std::uint32_t freq) noexcept {
-    if (freq == 0)
+  static void play(uint32_t freq) noexcept {
+    if (freq < 20)
       return;
-    const std::uint32_t div = 1193180 / freq;
+    const auto div = 1193180 / freq;
     port::outb(0x43, 0xB6);
-    port::io_wait();
-    port::outb(0x42, static_cast<std::uint8_t>(div & 0xFF));
-    port::io_wait();
-    port::outb(0x42, static_cast<std::uint8_t>((div >> 8) & 0xFF));
-
-    const std::uint8_t tmp = port::inb(0x61);
-    if (tmp != (tmp | 3)) {
+    port::outb(0x42, static_cast<uint8_t>(div & 0xFF));
+    port::outb(0x42, static_cast<uint8_t>((div >> 8) & 0xFF));
+    const auto tmp = port::inb(0x61);
+    if (!(tmp & 3))
       port::outb(0x61, tmp | 3);
-    }
   }
   static void mute() noexcept { port::outb(0x61, port::inb(0x61) & 0xFC); }
 };
-} // namespace hw
 
-namespace gfx {
-class canvas {
-  limine_framebuffer *fb;
-
+class input_handler {
 public:
-  constexpr explicit canvas(limine_framebuffer *f) noexcept : fb(f) {}
+  int mouse_x{0}, mouse_y{0};
+  bool left_click{false}, ctrl{false}, z{false}, z_pressed{false};
 
-  constexpr void rect(this const canvas &self, int x, int y, int w, int h,
-                      color c) noexcept {
-    if !consteval {
-      auto *ptr = static_cast<std::uint32_t *>(self.fb->address);
-      const int stride = self.fb->pitch / 4;
+  void init(int x, int y) noexcept {
+    mouse_x = x;
+    mouse_y = y;
+    ps2_ready(1);
+    port::outb(0x64, 0xA8);
+    ps2_ready(1);
+    port::outb(0x64, 0x20);
+    ps2_ready(0);
+    auto status = port::inb(0x60) | 2;
+    ps2_ready(1);
+    port::outb(0x64, 0x60);
+    ps2_ready(1);
+    port::outb(0x60, status);
+    mouse_cmd(0xF6);
+    mouse_read();
+    mouse_cmd(0xF4);
+    mouse_read();
+  }
 
-      for (int i = y; i < y + h; ++i) {
-        if (i < 0 || i >= static_cast<int>(self.fb->height))
+  void update() noexcept {
+    while (port::inb(0x64) & 1) {
+      uint8_t status = port::inb(0x64);
+      uint8_t data = port::inb(0x60);
+
+      if (status & 0x20) { // Data is from Mouse
+        // Self-Sync: First byte of packet must have bit 3 set
+        if (m_cycle == 0 && !(data & 0x08))
           continue;
-        for (int j = x; j < x + w; ++j) {
-          if (j >= 0 && j < static_cast<int>(self.fb->width)) {
-            ptr[i * stride + j] = std::to_underlying(c);
+
+        m_packet[m_cycle++] = data;
+        if (m_cycle == 3) {
+          m_cycle = 0;
+          left_click = m_packet[0] & 0x01;
+          int32_t dx = m_packet[1];
+          int32_t dy = m_packet[2];
+          if (m_packet[0] & 0x10)
+            dx -= 256;
+          if (m_packet[0] & 0x20)
+            dy -= 256;
+          mouse_x += dx;
+          mouse_y -= dy;
+        }
+      } else { // Data is from Keyboard
+        if (data == 0x1D)
+          ctrl = true;
+        else if (data == 0x9D)
+          ctrl = false;
+        else if (data == 0x2C) {
+          if (!z_pressed) {
+            z = true;
+            z_pressed = true;
           }
+        } else if (data == 0xAC) {
+          z = false;
+          z_pressed = false;
         }
       }
     }
   }
 
-  [[nodiscard]] constexpr std::uint64_t
-  width(this const canvas &self) noexcept {
-    return self.fb->width;
+private:
+  uint8_t m_packet[3]{};
+  uint8_t m_cycle{0};
+
+  void ps2_ready(uint8_t type) noexcept {
+    for (int i = 0; i < 1000; i++) {
+      if (type == 0 && (port::inb(0x64) & 1))
+        return;
+      if (type == 1 && !(port::inb(0x64) & 2))
+        return;
+    }
   }
-  [[nodiscard]] constexpr std::uint64_t
-  height(this const canvas &self) noexcept {
-    return self.fb->height;
+  void mouse_cmd(uint8_t data) noexcept {
+    ps2_ready(1);
+    port::outb(0x64, 0xD4);
+    ps2_ready(1);
+    port::outb(0x60, data);
+  }
+  auto mouse_read() noexcept -> uint8_t {
+    ps2_ready(0);
+    return port::inb(0x60);
+  }
+};
+} // namespace hw
+
+namespace gfx {
+// Fixed size internal buffer for 1-to-1 mapping
+constinit static uint32_t back_buffer[1920 * 1080];
+
+class canvas {
+  limine_framebuffer *fb;
+
+public:
+  explicit canvas(limine_framebuffer *f) : fb(f) {}
+
+  void clear(color c) noexcept {
+    const auto val = static_cast<uint32_t>(c);
+    for (size_t i = 0; i < (fb->width * fb->height); ++i)
+      back_buffer[i] = val;
+  }
+
+  void put_pixel(int x, int y, color c) noexcept {
+    if (x < 0 || x >= (int)fb->width || y < 0 || y >= (int)fb->height)
+      return;
+    back_buffer[y * fb->width + x] = static_cast<uint32_t>(c);
+  }
+
+  void draw_line(int x0, int y0, int x1, int y1, color c) noexcept {
+    int dx = math::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -math::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (true) {
+      for (int i = -1; i <= 1; ++i)
+        for (int j = -1; j <= 1; ++j)
+          put_pixel(x0 + i, y0 + j, c);
+      if (x0 == x1 && y0 == y1)
+        break;
+      int e2 = 2 * err;
+      if (e2 >= dy) {
+        err += dy;
+        x0 += sx;
+      }
+      if (e2 <= dx) {
+        err += dx;
+        y0 += sy;
+      }
+    }
+  }
+
+  void draw_rect(int x, int y, int w, int h, color c) noexcept {
+    for (int i = y; i < y + h; ++i)
+      for (int j = x; j < x + w; ++j)
+        put_pixel(j, i, c);
+  }
+
+  void swap() noexcept {
+    auto *const front = static_cast<uint32_t *>(fb->address);
+    const uint32_t stride = fb->pitch / 4;
+    for (uint32_t y = 0; y < fb->height; ++y) {
+      for (uint32_t x = 0; x < fb->width; ++x) {
+        front[y * stride + x] = back_buffer[y * fb->width + x];
+      }
+    }
+  }
+
+  [[nodiscard]] constexpr auto width() const noexcept -> int {
+    return (int)fb->width;
+  }
+  [[nodiscard]] constexpr auto height() const noexcept -> int {
+    return (int)fb->height;
   }
 };
 } // namespace gfx
 
+struct point {
+  int x, y;
+};
+constinit static point doodle_data[20000] = {};
+constinit static int strokes[512];
+constinit static int p_idx = 0;
+constinit static int s_idx = 0;
+constinit static bool drawing = false;
+
 } // namespace frosty
 
-constinit volatile limine_framebuffer_request fb_req = {
-    .id = LIMINE_FRAMEBUFFER_REQUEST_ID, .revision = 0, .response = nullptr};
+static volatile limine_framebuffer_request fb_req = {
+    .id = LIMINE_FRAMEBUFFER_REQUEST_ID, .revision = 0};
 
-extern "C" void kmain() noexcept {
+extern "C" void kmain() {
   using namespace frosty;
+  if (!fb_req.response)
+    while (true)
+      asm("hlt");
 
-  hw::mouse m;
+  gfx::canvas screen{fb_req.response->framebuffers[0]};
+  hw::input_handler input{};
+  input.init(screen.width() / 2, screen.height() / 2);
 
-  if (!fb_req.response || fb_req.response->framebuffer_count < 1) {
-    for (;;)
-      asm volatile("hlt");
-  }
+  const uint32_t scale[] = {261, 329, 392, 440, 523};
+  auto frame = 0;
 
-  frosty::math::random rng;
-  gfx::canvas screen(fb_req.response->framebuffers[0]);
+  while (true) {
+    screen.clear(color::pink);
+    input.update();
 
-  int sz = 60;
-  uint32_t notes[] = {220, 246, 277, 329, 369};
+    // Screen Boundary Enforcement
+    if (input.mouse_x < 0)
+      input.mouse_x = 0;
+    if (input.mouse_y < 0)
+      input.mouse_y = 0;
+    if (input.mouse_x >= screen.width())
+      input.mouse_x = screen.width() - 1;
+    if (input.mouse_y >= screen.height())
+      input.mouse_y = screen.height() - 1;
 
-  int angle = 0;
-  int base_x = 0;
-  uint64_t tick{};
-  m.init(screen.width() / 2, screen.height() / 2);
+    if (input.left_click) {
+      if (!drawing && s_idx < 511) {
+        strokes[s_idx++] = p_idx;
+        drawing = true;
+      }
+      if (p_idx < 19999) {
+        if (p_idx == 0 || (doodle_data[p_idx - 1].x != input.mouse_x ||
+                           doodle_data[p_idx - 1].y != input.mouse_y)) {
+          doodle_data[p_idx++] = {input.mouse_x, input.mouse_y};
+        }
+      }
+    } else {
+      drawing = false;
+    }
 
-  for (;;) {
-    screen.rect(0, 0, screen.width(), screen.height(), color::pink);
+    if (input.ctrl && input.z) {
+      if (s_idx > 0)
+        p_idx = strokes[--s_idx];
+      input.z = false;
+    }
 
-    m.poll();
-    if (m.x < 0)
-      m.x = 0;
-    if (m.y < 0)
-      m.y = 0;
-    if (m.x > (int)screen.width() - 10)
-      m.x = screen.width() - 10;
-    if (m.y > (int)screen.height() - 10)
-      m.y = screen.height() - 10;
+    for (int s = 0; s < s_idx; ++s) {
+      int start = strokes[s];
+      int end = (s + 1 < s_idx) ? strokes[s + 1] : p_idx;
+      for (int i = start + 1; i < end; ++i) {
+        screen.draw_line(doodle_data[i - 1].x, doodle_data[i - 1].y,
+                         doodle_data[i].x, doodle_data[i].y, color::ink);
+      }
+    }
 
-    screen.rect(m.x, m.y, sz, sz, color::white);
-    screen.rect(m.x + 12, m.y + 15, 8, 8, color::black);
-    screen.rect(m.x + 40, m.y + 15, 8, 8, color::black);
-    screen.rect(m.x + 25, m.y + 35, 10, 5, color::nose);
+    const auto kitty_y = input.mouse_y + (math::sin(frame * 6) * 15 / 100);
+    screen.draw_rect(input.mouse_x, kitty_y, 44, 44, color::white);
+    screen.draw_rect(input.mouse_x + 8, kitty_y + 10, 8, 8, color::black);
+    screen.draw_rect(input.mouse_x + 28, kitty_y + 10, 8, 8, color::black);
+    screen.draw_rect(input.mouse_x + 17, kitty_y + 28, 10, 5, color::nose);
 
-    tick++;
+    screen.swap();
 
-    // commenting out sound since it can be quite annoying
-    // if (tick % 200 == 0) {
-    //   hw::speaker::play(notes[tick % 5]);
-    // } else if (tick % 200 == 50) {
-    //   hw::speaker::mute();
-    // }
-
-    hw::timer::sleep(0x39992);
+    frame++;
+    for (volatile int i = 0; i < 2000; i++)
+      ;
   }
 }
