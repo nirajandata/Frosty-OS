@@ -1,3 +1,4 @@
+#include "arch/simd.hpp"
 #include "drivers/input.hpp"
 #include "gfx/canvas.hpp"
 #include "gui/theme.hpp"
@@ -13,6 +14,7 @@ static volatile limine_framebuffer_request fb_req = {
 
 extern "C" void kmain() {
   using namespace frosty;
+  hw::simd::enable();
   if (!fb_req.response)
     while (true)
       hw::cpu::hlt();
@@ -23,9 +25,9 @@ extern "C" void kmain() {
 
   gui::state ui;
   ui.init();
+  screen.clear_persistent(color::pink);
 
   while (true) {
-    screen.clear(color::pink);
     input.update();
 
     if (input.size_up) {
@@ -44,11 +46,9 @@ extern "C" void kmain() {
     const int picker_w = 110;
     const int picker_h = 110;
 
-    int cur = input.active_tool - 1;
-    if (cur < 0)
-      cur = 0;
-    if (cur > 9)
-      cur = 9;
+    int cur = (input.active_tool - 1 < 0)
+                  ? 0
+                  : (input.active_tool - 1 > 9 ? 9 : input.active_tool - 1);
     ui.active_idx = cur;
 
     int px = (cur * box_w) + 110;
@@ -66,22 +66,14 @@ extern "C" void kmain() {
       } else if (on_picker) {
         int local_x = input.mouse_x - px;
         int local_y = input.mouse_y - bar_h - 5;
-
-        if (local_x > 85) {
+        if (local_x > 85)
           ui.slots[cur].h = (local_y * 359) / 80;
-        } else if (local_x > 5 && local_x < 85 && local_y >= 0 &&
-                   local_y < 80) { // Sat/Val square
+        else if (local_x > 5 && local_x < 85 && local_y >= 0 && local_y < 80) {
           ui.slots[cur].s = (local_x * 255) / 80;
           ui.slots[cur].v = 255 - (local_y * 255) / 80;
         }
-
-        if (ui.slots[cur].h < 0)
-          ui.slots[cur].h = 0;
-        if (ui.slots[cur].h > 359)
-          ui.slots[cur].h = 359;
         ui.slots[cur].update();
       } else if (input.mouse_y > bar_h) {
-        // Drawing logic
         if (!drawing && s_idx < 511) {
           strokes[s_idx++] = p_idx;
           drawing = true;
@@ -90,6 +82,12 @@ extern "C" void kmain() {
           doodle[p_idx++] =
               draw_point(input.mouse_x, input.mouse_y,
                          ui.slots[cur].current_color, ui.brush_size);
+          if (p_idx > strokes[s_idx - 1] + 1) {
+            auto &p1 = doodle[p_idx - 2];
+            auto &p2 = doodle[p_idx - 1];
+            screen.draw_line_persistent(p1.x, p1.y, p2.x, p2.y, p2.size,
+                                        (color)p2.c);
+          }
         }
       }
     } else {
@@ -99,15 +97,17 @@ extern "C" void kmain() {
     if (input.ctrl && input.z && s_idx > 0) {
       p_idx = strokes[--s_idx];
       input.z = false;
+      screen.clear_persistent(color::pink);
+      for (int s = 0; s < s_idx; ++s) {
+        int start = strokes[s], end = (s + 1 < s_idx) ? strokes[s + 1] : p_idx;
+        for (int i = start + 1; i < end; ++i)
+          screen.draw_line_persistent(doodle[i - 1].x, doodle[i - 1].y,
+                                      doodle[i].x, doodle[i].y, doodle[i].size,
+                                      (color)doodle[i].c);
+      }
     }
 
-    for (int s = 0; s < s_idx; ++s) {
-      int start = strokes[s], end = (s + 1 < s_idx) ? strokes[s + 1] : p_idx;
-      for (int i = start + 1; i < end; ++i)
-        screen.draw_line(doodle[i - 1].x, doodle[i - 1].y, doodle[i].x,
-                         doodle[i].y, doodle[i].size, (color)doodle[i].c);
-    }
-
+    screen.compose_layers();
     screen.draw_rect(0, 0, screen.width(), bar_h, color::gui_bg);
     screen.draw_text(10, 18, "FROSTY", color::black);
 
@@ -128,25 +128,20 @@ extern "C" void kmain() {
           screen.draw_rect(px + 5 + x, bar_h + 5 + y, 4, 4, (color)c);
         }
       }
-
       for (int y = 0; y < 80; y++) {
         uint32_t hue_col = hsv_to_rgb((y * 359) / 80, 255, 255);
-        screen.draw_line(px + 90, bar_h + 5 + y, px + 105, bar_h + 5 + y, 1,
-                         (color)hue_col);
+        for (int x = 0; x < 15; ++x)
+          screen.put_pixel(px + 90 + x, bar_h + 5 + y, (color)hue_col);
       }
-      screen.draw_text(px + 5, bar_h + 90, "PICKER", color::black);
     }
 
-    int sw = screen.width();
-    int sh = screen.height();
+    int sw = screen.width(), sh = screen.height();
     screen.draw_rect(sw - 150, sh - 40, 140, 35, color::gui_bg);
-    screen.draw_text(sw - 145, sh - 28, "SIZE", color::black);
     screen.draw_rect(sw - 100, sh - 25, (ui.brush_size * 80) / 100, 8,
                      color::white);
-
     screen.draw_rect(input.mouse_x - 1, input.mouse_y - 1, 3, 3, color::white);
 
     screen.swap();
-    hw::cpu::delay(1000000);
+    hw::cpu::delay(10000);
   }
 }

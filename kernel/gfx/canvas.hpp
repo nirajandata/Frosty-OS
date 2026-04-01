@@ -7,7 +7,8 @@
 
 namespace frosty::gfx {
 
-constinit static uint32_t back_buffer[1920 * 1080];
+alignas(32) constinit static uint32_t drawing_layer[1920 * 1080];
+alignas(32) constinit static uint32_t back_buffer[1920 * 1080];
 
 class canvas {
   limine_framebuffer *fb;
@@ -15,16 +16,22 @@ class canvas {
 public:
   explicit canvas(limine_framebuffer *f) : fb(f) {}
 
-  void clear(color c) noexcept {
+  void clear_persistent(color c) noexcept {
     const auto val = static_cast<uint32_t>(c);
     for (size_t i = 0; i < (fb->width * fb->height); ++i)
-      back_buffer[i] = val;
+      drawing_layer[i] = val;
   }
 
   void put_pixel(int x, int y, color c) noexcept {
     if (x < 0 || x >= (int)fb->width || y < 0 || y >= (int)fb->height)
       return;
     back_buffer[y * fb->width + x] = static_cast<uint32_t>(c);
+  }
+
+  void put_pixel_persistent(int x, int y, color c) noexcept {
+    if (x < 0 || x >= (int)fb->width || y < 0 || y >= (int)fb->height)
+      return;
+    drawing_layer[y * fb->width + x] = static_cast<uint32_t>(c);
   }
 
   void draw_rect(int x, int y, int w, int h, color c) noexcept {
@@ -51,7 +58,8 @@ public:
     }
   }
 
-  void draw_line(int x0, int y0, int x1, int y1, int size, color c) noexcept {
+  void draw_line_persistent(int x0, int y0, int x1, int y1, int size,
+                            color c) noexcept {
     int dx = math::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -math::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
@@ -59,8 +67,7 @@ public:
       int half = size / 2;
       for (int i = -half; i <= half; ++i)
         for (int j = -half; j <= half; ++j)
-          put_pixel(x0 + j, y0 + i, c);
-
+          put_pixel_persistent(x0 + j, y0 + i, c);
       if (x0 == x1 && y0 == y1)
         break;
       int e2 = 2 * err;
@@ -73,6 +80,24 @@ public:
         y0 += sy;
       }
     }
+  }
+
+  void compose_layers() noexcept {
+    uint32_t *src = drawing_layer;
+    uint32_t *dst = back_buffer;
+    size_t count = (fb->width * fb->height) / 8;
+    asm volatile(".intel_syntax noprefix\n"
+                 "1:\n"
+                 "vmovdqu ymm0, [rax]\n"
+                 "vmovdqu [rdx], ymm0\n"
+                 "add rax, 32\n"
+                 "add rdx, 32\n"
+                 "dec rcx\n"
+                 "jnz 1b\n"
+                 ".att_syntax prefix\n"
+                 : "+a"(src), "+d"(dst), "+c"(count)
+                 :
+                 : "ymm0", "memory");
   }
 
   void swap() noexcept {
